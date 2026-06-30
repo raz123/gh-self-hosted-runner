@@ -1,10 +1,24 @@
 # ⚡ gh-self-hosted-runner
 
+*Install a self-hosted GitHub Actions runner in one command. Interactive repo picker, auto-label detection, works on Linux & macOS.*
+
+## Quick Install
+
 ```bash
-curl -sSL https://github.com/raz123/gh-self-hosted-runner/releases/latest/download/setup-runner.sh | bash
+curl -fsSL https://github.com/raz123/gh-self-hosted-runner/releases/latest/download/setup-runner.sh | bash
 ```
 
-*Install a self-hosted GitHub Actions runner in one command. Interactive repo picker, auto-label detection, works on Linux & macOS.*
+Preview what it does first:
+
+```bash
+curl -fsSL https://github.com/raz123/gh-self-hosted-runner/releases/latest/download/setup-runner.sh | bash -s -- --dry-run
+```
+
+If `sudo` prompts fail (piped stdin), use a writable directory:
+
+```bash
+curl -fsSL https://github.com/raz123/gh-self-hosted-runner/releases/latest/download/setup-runner.sh | bash -s -- GHR_DIR=~/actions-runner
+```
 
 ## ✨ Features
 
@@ -24,6 +38,12 @@ GHR_NAME=my-runner \
 GHR_LABELS=self-hosted,linux \
 ./setup-runner.sh
 
+# Dry run (preview without changes)
+./setup-runner.sh --dry-run
+
+# Debug output
+./setup-runner.sh --debug
+
 # Uninstall
 ./setup-runner.sh --uninstall
 
@@ -35,7 +55,7 @@ GHR_LABELS=self-hosted,linux \
 
 - [`gh` CLI](https://cli.github.com) installed and logged in (`gh auth login`)
 - `curl`, `tar`, `jq` (pre-installed on most systems)
-- Root or `sudo` access
+- Root or `sudo` access (or set `GHR_DIR` to a writable path)
 
 ## 🗑️ Uninstall
 
