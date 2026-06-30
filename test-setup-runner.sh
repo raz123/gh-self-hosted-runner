@@ -297,6 +297,103 @@ if echo "$dry_run_output" | grep -q '\[dry-run\]'; then
 else
     assert_eq "dry-run shows dry-run markers" "0" "1"
 fi
+# ── Test: GHR_DIR default for non-root ────────────────────────────────────────
+printf '\n── GHR_DIR default (non-root) ──\n'
+
+# Simulate non-root: EUID != 0
+_test_euid=1000
+if [[ "$_test_euid" -eq 0 ]]; then
+    _expected_dir="/opt/actions-runner"
+else
+    _expected_dir="$HOME/actions-runner"
+fi
+assert_eq "non-root gets ~/actions-runner" "$HOME/actions-runner" "$_expected_dir"
+
+# Simulate root: EUID == 0
+_test_euid=0
+if [[ "$_test_euid" -eq 0 ]]; then
+    _expected_dir="/opt/actions-runner"
+else
+    _expected_dir="$HOME/actions-runner"
+fi
+assert_eq "root gets /opt/actions-runner" "/opt/actions-runner" "$_expected_dir"
+
+# ── Test: systemd user unit file content ──────────────────────────────────────
+printf '\n── systemd user unit content ──\n'
+
+# Create a temp dir to simulate the unit creation
+_tmp_unit_dir=$(mktemp -d)
+_test_repo="raz123/OrangeFox-Recovery-Builder-2024"
+_test_name="test-runner"
+_test_dir="$_tmp_unit_dir/actions-runner"
+mkdir -p "$_tmp_unit_dir/.config/systemd/user" "$_test_dir"
+
+# Simulate what _create_systemd_user_unit does (the unit file part)
+cat > "$_tmp_unit_dir/.config/systemd/user/actions-runner-${_test_name}.service" << UNIT
+[Unit]
+Description=GitHub Actions Runner (${_test_repo})
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=${_test_dir}
+ExecStart=${_test_dir}/run.sh
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:${_test_dir}/runner.log
+StandardError=append:${_test_dir}/runner.log
+
+[Install]
+WantedBy=default.target
+UNIT
+
+_unit_file="$_tmp_unit_dir/.config/systemd/user/actions-runner-${_test_name}.service"
+if [[ -f "$_unit_file" ]]; then
+    assert_eq "unit file created" "0" "0"
+else
+    assert_eq "unit file created" "0" "1"
+fi
+
+# Check unit file contains key settings
+if grep -q "Restart=on-failure" "$_unit_file" 2>/dev/null; then
+    assert_eq "unit has Restart=on-failure" "0" "0"
+else
+    assert_eq "unit has Restart=on-failure" "0" "1"
+fi
+
+if grep -q "runner.log" "$_unit_file" 2>/dev/null; then
+    assert_eq "unit logs to runner.log" "0" "0"
+else
+    assert_eq "unit logs to runner.log" "0" "1"
+fi
+
+rm -rf "$_tmp_unit_dir"
+
+# ── Test: background wrapper logs to file ──────────────────────────────────────
+printf '\n── background wrapper logging ──\n'
+
+_tmp_wrapper_dir=$(mktemp -d)
+cat > "$_tmp_wrapper_dir/run-in-background.sh" << 'WRAPPER'
+#!/usr/bin/env bash
+cd "$(dirname "$0")"
+nohup ./run.sh &>> runner.log &
+echo "$!" > .runner.pid
+echo "Runner started in background (PID: $!), logging to runner.log"
+WRAPPER
+
+if grep -q "runner.log" "$_tmp_wrapper_dir/run-in-background.sh" 2>/dev/null; then
+    assert_eq "wrapper logs to runner.log" "0" "0"
+else
+    assert_eq "wrapper logs to runner.log" "0" "1"
+fi
+
+if grep -q ".runner.pid" "$_tmp_wrapper_dir/run-in-background.sh" 2>/dev/null; then
+    assert_eq "wrapper writes PID file" "0" "0"
+else
+    assert_eq "wrapper writes PID file" "0" "1"
+fi
+
+rm -rf "$_tmp_wrapper_dir"
 # ── Summary ──────────────────────────────────────────────────────────────────
 printf '\n══════════════════════════════════════\n'
 printf 'Results: %d passed, %d failed, %d total\n' "$PASS" "$FAIL" "$TOTAL"

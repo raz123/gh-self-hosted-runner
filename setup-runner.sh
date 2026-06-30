@@ -452,10 +452,15 @@ install_runner() {
         info "Installing as service..."
         if [[ "$RUNNER_SVC" != "none" ]]; then
             if [[ "$RUNNER_PLATFORM" == "linux" ]]; then
-                sudo ./svc.sh install && sudo ./svc.sh start || {
-                    warn "svc.sh failed. Creating background wrapper instead."
-                    _create_background_wrapper
-                }
+                # Try without sudo first (works for systemd --user or writable dirs)
+                if ./svc.sh install 2>/dev/null && ./svc.sh start 2>/dev/null; then
+                    success "Service installed (user-level systemd)"
+                elif sudo ./svc.sh install 2>/dev/null && sudo ./svc.sh start 2>/dev/null; then
+                    success "Service installed (system-level systemd)"
+                else
+                    warn "svc.sh failed (no sudo or service manager error)."
+                    _create_systemd_user_unit
+                fi
             elif [[ "$RUNNER_PLATFORM" == "osx" ]]; then
                 ./svc.sh install && ./svc.sh start || {
                     warn "svc.sh failed. Creating background wrapper instead."
@@ -475,15 +480,50 @@ install_runner() {
     success "Runner installed and started!"
 }
 
-_create_background_wrapper() {
+_create_systemd_user_unit() {
+    local unit_dir="${HOME}/.config/systemd/user"
+    local unit_file="${unit_dir}/actions-runner-${GHR_NAME}.service"
+    local log_file="${GHR_DIR}/runner.log"
+
+    mkdir -p "$unit_dir"
+    cat > "$unit_file" << UNIT
+[Unit]
+Description=GitHub Actions Runner (${GHR_REPO})
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=${GHR_DIR}
+ExecStart=${GHR_DIR}/run.sh
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:${log_file}
+StandardError=append:${log_file}
+
+[Install]
+WantedBy=default.target
+UNIT
+
+    # Also create a background wrapper as a fallback
     cat > "$GHR_DIR/run-in-background.sh" << 'WRAPPER'
 #!/usr/bin/env bash
 cd "$(dirname "$0")"
-nohup ./run.sh &>/dev/null &
-echo "Runner started in background (PID: $!)"
+nohup ./run.sh &>> runner.log &
+echo "$!" > .runner.pid
+echo "Runner started in background (PID: $!), logging to runner.log"
 WRAPPER
     chmod +x "$GHR_DIR/run-in-background.sh"
-    warn "Service install failed. Run manually: sudo $GHR_DIR/run-in-background.sh"
+
+    # Try to enable the systemd user service
+    if systemctl --user daemon-reload 2>/dev/null && \
+       systemctl --user enable "actions-runner-${GHR_NAME}.service" 2>/dev/null && \
+       systemctl --user start "actions-runner-${GHR_NAME}.service" 2>/dev/null; then
+        success "Systemd user service installed and started"
+        info "To auto-start on login: loginctl enable-linger $(whoami)"
+    else
+        warn "Systemd user service failed. Using background wrapper."
+        "$GHR_DIR/run-in-background.sh"
+    fi
 }
 
 # ── Phase 5: Verify ──────────────────────────────────────────────────────────
@@ -495,10 +535,26 @@ verify_runner() {
     local svc_ok=false
 
     # Check service status
-    if [[ "$RUNNER_PLATFORM" == "linux" && "$RUNNER_SVC" == "systemd" ]]; then
+    if [[ "$RUNNER_PLATFORM" == "linux" ]]; then
+        # Check system-level systemd service (from svc.sh)
         local unit="actions.runner.$(echo "$GHR_REPO" | tr '/' '-').${GHR_NAME}.service"
         if systemctl is-active "$unit" &>/dev/null 2>&1; then
             svc_ok=true
+        fi
+        # Check user-level systemd service (from _create_systemd_user_unit)
+        if [[ "$svc_ok" == "false" ]]; then
+            local user_unit="actions-runner-${GHR_NAME}.service"
+            if systemctl --user is-active "$user_unit" &>/dev/null 2>&1; then
+                svc_ok=true
+            fi
+        fi
+        # Check for background process (PID file from run-in-background.sh)
+        if [[ "$svc_ok" == "false" && -f "$GHR_DIR/.runner.pid" ]]; then
+            local pid
+            pid="$(cat "$GHR_DIR/.runner.pid" 2>/dev/null || true)"
+            if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+                svc_ok=true
+            fi
         fi
     elif [[ "$RUNNER_PLATFORM" == "osx" && "$RUNNER_SVC" == "launchd" ]]; then
         if launchctl list 2>/dev/null | grep -q "actions.runner"; then
@@ -506,8 +562,8 @@ verify_runner() {
         fi
     fi
 
-    if [[ "$svc_ok" == "false" && "$RUNNER_SVC" != "none" ]]; then
-        warn "Service not detected. Runner may still be starting up."
+    if [[ "$svc_ok" == "false" ]]; then
+        warn "Runner service not detected. It may still be starting up."
     fi
 
     # API check
@@ -663,8 +719,12 @@ main() {
     fi
     export GHR_UNATTENDED="$unattended"
 
-    # Set defaults
-    export GHR_DIR="${GHR_DIR:-/opt/actions-runner}"
+    # Set defaults — use ~/actions-runner for non-root, /opt/actions-runner for root
+    if [[ $EUID -eq 0 ]]; then
+        export GHR_DIR="${GHR_DIR:-/opt/actions-runner}"
+    else
+        export GHR_DIR="${GHR_DIR:-$HOME/actions-runner}"
+    fi
     export GHR_WORK="${GHR_WORK:-_work}"
     export GHR_NAME="${GHR_NAME:-$(hostname | cut -d. -f1)}"
     export GHR_REPLACE="${GHR_REPLACE:-true}"
