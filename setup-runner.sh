@@ -265,9 +265,12 @@ detect_labels() {
             exit 1
         fi
         warn "No workflow files found in $GHR_REPO."
-        if [[ -t 0 ]]; then
-            info "Enter runner labels manually (comma-separated, e.g. self-hosted,linux,my-label): "
-            read -r GHR_LABELS
+        if [[ -t 0 ]] && read -r GHR_LABELS 2>/dev/null; then
+            : # got input
+        elif [[ -t 0 ]]; then
+            # read hit EOF (piped stdin like curl|bash) — use detected labels
+            GHR_LABELS="$detected_labels"
+            info "Non-interactive input detected: using auto-detected labels"
         else
             error "No self-hosted runner labels found and stdin is not a terminal."
             error "Set GHR_LABELS env var for non-interactive mode."
@@ -298,9 +301,11 @@ detect_labels() {
             exit 1
         fi
         warn "No self-hosted runner labels found in workflows."
-        if [[ -t 0 ]]; then
-            info "Enter runner labels manually (comma-separated): "
-            read -r GHR_LABELS
+        if [[ -t 0 ]] && read -r GHR_LABELS 2>/dev/null; then
+            : # got input
+        elif [[ -t 0 ]]; then
+            error "No terminal input (piped stdin). Set GHR_LABELS env var."
+            exit 1
         else
             error "No self-hosted runner labels found and stdin is not a terminal."
             error "Set GHR_LABELS env var for non-interactive mode."
@@ -318,8 +323,12 @@ detect_labels() {
             info "Auto-detected labels: $detected_labels"
             if [[ -t 0 ]]; then
                 info "Press Enter to accept, or type new labels (comma-separated): "
-                read -r user_input
-                GHR_LABELS="${user_input:-$detected_labels}"
+                if read -r user_input 2>/dev/null; then
+                    GHR_LABELS="${user_input:-$detected_labels}"
+                else
+                    # stdin hit EOF (piped curl|bash) — use detected labels
+                    GHR_LABELS="$detected_labels"
+                fi
             else
                 GHR_LABELS="$detected_labels"
                 info "Non-interactive: using auto-detected labels"
