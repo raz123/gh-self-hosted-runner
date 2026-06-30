@@ -298,8 +298,32 @@ install_runner() {
         error "Runner already installed at $GHR_DIR. Use --replace to overwrite or --uninstall first."
         exit 1
     fi
-    sudo mkdir -p "$GHR_DIR"
+    mkdir -p "$GHR_DIR" 2>/dev/null || sudo mkdir -p "$GHR_DIR"
     sudo chown "$(id -u):$(id -g)" "$GHR_DIR" 2>/dev/null || true
+    # Remove existing runner config before re-configuration (needed for --replace idempotency)
+    if [[ -f "$GHR_DIR/.runner" ]] && [[ "${GHR_REPLACE:-true}" == "true" ]]; then
+        info "Removing existing runner configuration..."
+        cd "$GHR_DIR"
+        if [[ -f "svc.sh" ]]; then
+            if [[ "$RUNNER_PLATFORM" == "linux" ]]; then
+                sudo ./svc.sh stop 2>/dev/null || true
+                sudo ./svc.sh uninstall 2>/dev/null || true
+            elif [[ "$RUNNER_PLATFORM" == "osx" ]]; then
+                ./svc.sh stop 2>/dev/null || true
+                ./svc.sh uninstall 2>/dev/null || true
+                # Fallback: manually remove plist if svc.sh uninstall failed
+                rm -f ~/Library/LaunchAgents/actions.runner.*.${GHR_NAME}.plist 2>/dev/null || true
+            fi
+        fi
+        if [[ -f "config.sh" ]]; then
+            local removal_token
+            removal_token="$(gh api "repos/${GHR_REPO}/actions/runners/remove-token" -X POST --jq '.token' 2>/dev/null || true)"
+            if [[ -n "$removal_token" ]]; then
+                ./config.sh remove --token "$removal_token" 2>/dev/null || true
+            fi
+        fi
+        cd - >/dev/null
+    fi
 
     # Generate registration token
     info "Generating registration token..."
@@ -448,7 +472,7 @@ uninstall_runner() {
 
     # Generate removal token
     local removal_token
-    removal_token="$(gh api "repos/${GHR_REPO}/actions/runners/removal-token" -X POST --jq '.token' 2>/dev/null)" || {
+    removal_token="$(gh api "repos/${GHR_REPO}/actions/runners/remove-token" -X POST --jq '.token' 2>/dev/null)" || {
         error "Cannot generate removal token. Ensure you have admin access to $GHR_REPO."
         exit 1
     }
