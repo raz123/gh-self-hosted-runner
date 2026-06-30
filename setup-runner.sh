@@ -357,6 +357,7 @@ install_runner() {
         systemctl --user stop "actions-runner-${GHR_NAME}.service" 2>/dev/null || true
         systemctl --user disable "actions-runner-${GHR_NAME}.service" 2>/dev/null || true
         rm -f ~/Library/LaunchAgents/actions.runner.*.${GHR_NAME}.plist 2>/dev/null || true
+        # Try config.sh remove, then forcibly clean up local files
         if [[ -f "config.sh" ]]; then
             local removal_token
             removal_token="$(gh api "repos/${GHR_REPO}/actions/runners/remove-token" -X POST --jq '.token' 2>/dev/null || true)"
@@ -364,6 +365,8 @@ install_runner() {
                 ./config.sh remove --token "$removal_token" 2>/dev/null || true
             fi
         fi
+        # Forcibly remove local config so config.sh won't refuse to reconfigure
+        rm -f .runner .credentials .credentials_rsaparams .env .path
         cd - >/dev/null
     fi
 
