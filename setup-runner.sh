@@ -341,7 +341,16 @@ install_runner() {
         exit 1
     fi
     if dry_run "Would create directory: $GHR_DIR"; then
-        mkdir -p "$GHR_DIR" 2>/dev/null || sudo mkdir -p "$GHR_DIR"
+        if mkdir -p "$GHR_DIR" 2>/dev/null; then
+            debug "install_runner: created $GHR_DIR without sudo"
+        elif sudo mkdir -p "$GHR_DIR" 2>/dev/null; then
+            debug "install_runner: created $GHR_DIR with sudo"
+        else
+            error "Cannot create $GHR_DIR — need root access."
+            error "Fix: run with sudo, or set GHR_DIR to a writable path:"
+            error "  GHR_DIR=~/actions-runner $0"
+            exit 1
+        fi
         sudo chown "$(id -u):$(id -g)" "$GHR_DIR" 2>/dev/null || true
     fi
     # Remove existing runner config before re-configuration (needed for --replace idempotency)
