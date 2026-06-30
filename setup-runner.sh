@@ -295,17 +295,24 @@ detect_labels() {
     detected_labels="$(echo "$all_content" | parse_labels_from_yaml)"
     debug "detect_labels: parsed labels: $detected_labels"
 
+    # If no custom labels found, check if workflow uses bare "self-hosted"
+    # and fall back to platform defaults (self-hosted + platform label)
+    if [[ -z "$detected_labels" ]]; then
+        if echo "$all_content" | grep -qiE 'runs-on\s*:\s*.*self-hosted'; then
+            detected_labels="self-hosted,${RUNNER_PLATFORM}"
+            debug "detect_labels: bare self-hosted found, using defaults: $detected_labels"
+        fi
+    fi
+
     if [[ -z "$detected_labels" ]]; then
         if [[ "${GHR_UNATTENDED:-false}" == "true" ]]; then
             error "No self-hosted runner labels found. Set GHR_LABELS env var for unattended mode."
             exit 1
         fi
         warn "No self-hosted runner labels found in workflows."
-        if [[ -t 0 ]] && read -r GHR_LABELS 2>/dev/null; then
-            : # got input
-        elif [[ -t 0 ]]; then
-            error "No terminal input (piped stdin). Set GHR_LABELS env var."
-            exit 1
+        if [[ -t 0 ]]; then
+            info "Enter runner labels (comma-separated, e.g. self-hosted,linux): "
+            read -r GHR_LABELS 2>/dev/null || true
         else
             error "No self-hosted runner labels found and stdin is not a terminal."
             error "Set GHR_LABELS env var for non-interactive mode."
