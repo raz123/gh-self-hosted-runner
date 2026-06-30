@@ -466,9 +466,10 @@ install_runner() {
     printf '\n'
 
     # Interactive prompt: launch the runner now?
-    if [[ -t 0 ]] && [[ "${GHR_SERVICE:-false}" != "true" ]]; then
+    # Use /dev/tty (always the terminal, even with curl|bash pipes)
+    if [[ -r /dev/tty ]] && [[ "${GHR_SERVICE:-false}" != "true" ]]; then
         printf '\033[1;34m→ Launch the runner now? [Y/n]: \033[0m' >&2
-        if read -r launch_choice 2>/dev/null; then
+        if read -r launch_choice </dev/tty 2>/dev/null; then
             launch_choice="${launch_choice,,}"  # lowercase
             if [[ "$launch_choice" != "n" && "$launch_choice" != "no" ]]; then
                 info "Starting runner... (Ctrl+C to stop)"
