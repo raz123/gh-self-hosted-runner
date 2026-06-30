@@ -353,14 +353,10 @@ install_runner() {
     if [[ -f "$GHR_DIR/.runner" ]] && [[ "${GHR_REPLACE:-true}" == "true" ]]; then
         info "Removing existing runner configuration..."
         cd "$GHR_DIR"
-        if [[ -f "svc.sh" ]]; then
-            ./svc.sh stop 2>/dev/null || true
-            ./svc.sh uninstall 2>/dev/null || true
-            # Also stop user-level systemd if it exists
-            systemctl --user stop "actions-runner-${GHR_NAME}.service" 2>/dev/null || true
-            systemctl --user disable "actions-runner-${GHR_NAME}.service" 2>/dev/null || true
-            rm -f ~/Library/LaunchAgents/actions.runner.*.${GHR_NAME}.plist 2>/dev/null || true
-        fi
+        # Stop user-level systemd service if it exists
+        systemctl --user stop "actions-runner-${GHR_NAME}.service" 2>/dev/null || true
+        systemctl --user disable "actions-runner-${GHR_NAME}.service" 2>/dev/null || true
+        rm -f ~/Library/LaunchAgents/actions.runner.*.${GHR_NAME}.plist 2>/dev/null || true
         if [[ -f "config.sh" ]]; then
             local removal_token
             removal_token="$(gh api "repos/${GHR_REPO}/actions/runners/remove-token" -X POST --jq '.token' 2>/dev/null || true)"
@@ -592,11 +588,7 @@ uninstall_runner() {
     if [[ -d "$GHR_DIR" ]]; then
         cd "$GHR_DIR"
 
-        if [[ -f "svc.sh" ]]; then
-            ./svc.sh stop 2>/dev/null || true
-            ./svc.sh uninstall 2>/dev/null || true
-        fi
-        # Also stop user-level systemd
+        # Stop user-level systemd service
         systemctl --user stop "actions-runner-${GHR_NAME}.service" 2>/dev/null || true
         systemctl --user disable "actions-runner-${GHR_NAME}.service" 2>/dev/null || true
         rm -f ~/Library/LaunchAgents/actions.runner.*.${GHR_NAME}.plist 2>/dev/null || true
