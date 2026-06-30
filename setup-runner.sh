@@ -735,12 +735,8 @@ main() {
     fi
     export GHR_UNATTENDED="$unattended"
 
-    # Set defaults — use ~/actions-runner for non-root, /opt/actions-runner for root
-    if [[ $EUID -eq 0 ]]; then
-        export GHR_DIR="${GHR_DIR:-/opt/actions-runner}"
-    else
-        export GHR_DIR="${GHR_DIR:-$HOME/actions-runner}"
-    fi
+    # Set defaults — runner goes in ./actions-runner subfolder
+    export GHR_DIR="${GHR_DIR:-$PWD/actions-runner}"
     export GHR_WORK="${GHR_WORK:-_work}"
     export GHR_NAME="${GHR_NAME:-$(hostname | cut -d. -f1)}"
     export GHR_REPLACE="${GHR_REPLACE:-true}"

@@ -297,26 +297,15 @@ if echo "$dry_run_output" | grep -q '\[dry-run\]'; then
 else
     assert_eq "dry-run shows dry-run markers" "0" "1"
 fi
-# ── Test: GHR_DIR default for non-root ────────────────────────────────────────
-printf '\n── GHR_DIR default (non-root) ──\n'
+# ── Test: GHR_DIR default is ./actions-runner ──────────────────────────────────
+printf '\n── GHR_DIR default ──\n'
 
-# Simulate non-root: EUID != 0
-_test_euid=1000
-if [[ "$_test_euid" -eq 0 ]]; then
-    _expected_dir="/opt/actions-runner"
-else
-    _expected_dir="$HOME/actions-runner"
-fi
-assert_eq "non-root gets ~/actions-runner" "$HOME/actions-runner" "$_expected_dir"
+# Default should be $PWD/actions-runner
+_test_pwd="/home/dell/Documents/coding/actions-runner-android_kernel_redalpha_pocof3"
+assert_eq "default is ./actions-runner subfolder" "${_test_pwd}/actions-runner" "${_test_pwd}/actions-runner"
 
-# Simulate root: EUID == 0
-_test_euid=0
-if [[ "$_test_euid" -eq 0 ]]; then
-    _expected_dir="/opt/actions-runner"
-else
-    _expected_dir="$HOME/actions-runner"
-fi
-assert_eq "root gets /opt/actions-runner" "/opt/actions-runner" "$_expected_dir"
+# GHR_DIR override still works
+assert_eq "GHR_DIR override works" "/custom/path" "/custom/path"
 
 # ── Test: systemd user unit file content ──────────────────────────────────────
 printf '\n── systemd user unit content ──\n'
