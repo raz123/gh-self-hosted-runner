@@ -9,6 +9,7 @@ set -euo pipefail
 GITHUB_API="https://api.github.com"
 RUNNER_RELEASES_URL="https://api.github.com/repos/actions/runner/releases/latest"
 GITHUB_DOWNLOAD="https://github.com/actions/runner/releases/download"
+RUNNER_CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/gh-runner"
 
 # Labels to exclude from auto-detection (GitHub-hosted runners)
 EXCLUDE_LABELS="^(ubuntu-.*|windows-.*|macos-.*|self-hosted)$"
@@ -89,17 +90,6 @@ check_prereqs() {
     done
     success "curl, tar, jq found"
 
-    # Sudo access
-    if [[ $EUID -ne 0 ]]; then
-        if ! sudo -n true 2>/dev/null; then
-            warn "No passwordless sudo. You may be prompted for password during install."
-        else
-            success "Sudo access confirmed"
-        fi
-    else
-        success "Running as root"
-    fi
-
     # Detect OS
     local uname_s
     uname_s="$(uname -s)"
@@ -138,9 +128,7 @@ check_prereqs() {
         fi
     fi
     if [[ "$RUNNER_SVC" == "none" ]]; then
-        warn "No systemd or launchd detected. Will create a run-in-background wrapper."
-    else
-        success "Service manager: $RUNNER_SVC"
+        warn "No systemd or launchd detected."
     fi
 }
 
@@ -265,12 +253,9 @@ detect_labels() {
             exit 1
         fi
         warn "No workflow files found in $GHR_REPO."
-        if [[ -t 0 ]] && read -r GHR_LABELS 2>/dev/null; then
-            : # got input
-        elif [[ -t 0 ]]; then
-            # read hit EOF (piped stdin like curl|bash) — use detected labels
-            GHR_LABELS="$detected_labels"
-            info "Non-interactive input detected: using auto-detected labels"
+        if [[ -t 0 ]]; then
+            info "Enter runner labels (comma-separated, e.g. self-hosted,linux): "
+            read -r GHR_LABELS 2>/dev/null || true
         else
             error "No self-hosted runner labels found and stdin is not a terminal."
             error "Set GHR_LABELS env var for non-interactive mode."
@@ -357,32 +342,24 @@ install_runner() {
         exit 1
     fi
     if dry_run "Would create directory: $GHR_DIR"; then
-        if mkdir -p "$GHR_DIR" 2>/dev/null; then
-            debug "install_runner: created $GHR_DIR without sudo"
-        elif sudo mkdir -p "$GHR_DIR" 2>/dev/null; then
-            debug "install_runner: created $GHR_DIR with sudo"
-        else
-            error "Cannot create $GHR_DIR — need root access."
-            error "Fix: run with sudo, or set GHR_DIR to a writable path:"
-            error "  GHR_DIR=~/actions-runner $0"
+        if ! mkdir -p "$GHR_DIR" 2>/dev/null; then
+            error "Cannot create $GHR_DIR — check permissions."
+            error "Fix: set GHR_DIR to a writable path:"
+            error "  GHR_DIR=~/my-runners $0"
             exit 1
         fi
-        sudo chown "$(id -u):$(id -g)" "$GHR_DIR" 2>/dev/null || true
     fi
     # Remove existing runner config before re-configuration (needed for --replace idempotency)
     if [[ -f "$GHR_DIR/.runner" ]] && [[ "${GHR_REPLACE:-true}" == "true" ]]; then
         info "Removing existing runner configuration..."
         cd "$GHR_DIR"
         if [[ -f "svc.sh" ]]; then
-            if [[ "$RUNNER_PLATFORM" == "linux" ]]; then
-                sudo ./svc.sh stop 2>/dev/null || true
-                sudo ./svc.sh uninstall 2>/dev/null || true
-            elif [[ "$RUNNER_PLATFORM" == "osx" ]]; then
-                ./svc.sh stop 2>/dev/null || true
-                ./svc.sh uninstall 2>/dev/null || true
-                # Fallback: manually remove plist if svc.sh uninstall failed
-                rm -f ~/Library/LaunchAgents/actions.runner.*.${GHR_NAME}.plist 2>/dev/null || true
-            fi
+            ./svc.sh stop 2>/dev/null || true
+            ./svc.sh uninstall 2>/dev/null || true
+            # Also stop user-level systemd if it exists
+            systemctl --user stop "actions-runner-${GHR_NAME}.service" 2>/dev/null || true
+            systemctl --user disable "actions-runner-${GHR_NAME}.service" 2>/dev/null || true
+            rm -f ~/Library/LaunchAgents/actions.runner.*.${GHR_NAME}.plist 2>/dev/null || true
         fi
         if [[ -f "config.sh" ]]; then
             local removal_token
@@ -409,8 +386,8 @@ install_runner() {
         fi
     fi
 
-    # Download latest runner
-    local latest_tag latest_version runner_file
+    # Download latest runner (with local cache)
+    local latest_tag latest_version runner_file cache_file
     if dry_run "Would fetch latest runner release and download"; then
         info "Fetching latest runner release..."
         latest_tag="$(curl -sfL "$RUNNER_RELEASES_URL" | jq -r '.tag_name')" || {
@@ -420,16 +397,23 @@ install_runner() {
         }
         latest_version="${latest_tag#v}"
         runner_file="actions-runner-${RUNNER_PLATFORM}-${RUNNER_ARCH}-${latest_version}.tar.gz"
-        debug "install_runner: downloading $runner_file"
+        cache_file="${RUNNER_CACHE_DIR}/${runner_file}"
+        debug "install_runner: runner archive $runner_file"
 
-        if [[ ! -f "$GHR_DIR/$runner_file" ]]; then
+        # Check local cache first, then GHR_DIR, then download
+        if [[ -f "$cache_file" ]]; then
+            info "Using cached runner archive."
+            cp "$cache_file" "$GHR_DIR/$runner_file"
+        elif [[ -f "$GHR_DIR/$runner_file" ]]; then
+            info "Runner archive found in install dir."
+        else
+            mkdir -p "$RUNNER_CACHE_DIR"
             info "Downloading $runner_file..."
-            curl -sL "${GITHUB_DOWNLOAD}/${latest_tag}/${runner_file}" -o "$GHR_DIR/$runner_file" || {
+            curl -sL "${GITHUB_DOWNLOAD}/${latest_tag}/${runner_file}" -o "$cache_file" || {
                 error "Download failed: ${GITHUB_DOWNLOAD}/${latest_tag}/${runner_file}"
                 exit 1
             }
-        else
-            info "Runner archive already downloaded."
+            cp "$cache_file" "$GHR_DIR/$runner_file"
         fi
 
         info "Extracting runner..."
@@ -437,6 +421,7 @@ install_runner() {
             error "Failed to extract runner archive."
             exit 1
         }
+        rm -f "$GHR_DIR/$runner_file"
     fi
 
     # Configure runner
@@ -462,38 +447,24 @@ install_runner() {
         }
     fi
 
-    # Install service
-    debug "install_runner: installing service"
-    if dry_run "Would install and start service (${RUNNER_SVC})"; then
-        info "Installing as service..."
-        if [[ "$RUNNER_SVC" != "none" ]]; then
+    # Install service (only if --service flag was passed)
+    if [[ "${GHR_SERVICE:-false}" == "true" ]]; then
+        debug "install_runner: installing service"
+        if dry_run "Would install and start service (${RUNNER_SVC})"; then
+            info "Installing as service..."
             if [[ "$RUNNER_PLATFORM" == "linux" ]]; then
-                # Try without sudo first (works for systemd --user or writable dirs)
-                if ./svc.sh install 2>/dev/null && ./svc.sh start 2>/dev/null; then
-                    success "Service installed (user-level systemd)"
-                elif sudo ./svc.sh install 2>/dev/null && sudo ./svc.sh start 2>/dev/null; then
-                    success "Service installed (system-level systemd)"
-                else
-                    warn "svc.sh failed (no sudo or service manager error)."
-                    _create_systemd_user_unit
-                fi
+                _create_systemd_user_unit
             elif [[ "$RUNNER_PLATFORM" == "osx" ]]; then
                 ./svc.sh install && ./svc.sh start || {
-                    warn "svc.sh failed. Creating background wrapper instead."
-                    _create_background_wrapper
+                    warn "svc.sh failed. Runner is configured but not running as a service."
                 }
             fi
-        else
-            _create_background_wrapper
         fi
     fi
 
-    # Clean up tarball
-    if [[ "$DRY_RUN" != "true" ]]; then
-        rm -f "$GHR_DIR/$runner_file"
-    fi
-
-    success "Runner installed and started!"
+    success "Runner installed!"
+    info "To run the runner:"
+    info "  cd $GHR_DIR && ./run.sh"
 }
 
 _create_systemd_user_unit() {
@@ -520,25 +491,13 @@ StandardError=append:${log_file}
 WantedBy=default.target
 UNIT
 
-    # Also create a background wrapper as a fallback
-    cat > "$GHR_DIR/run-in-background.sh" << 'WRAPPER'
-#!/usr/bin/env bash
-cd "$(dirname "$0")"
-nohup ./run.sh &>> runner.log &
-echo "$!" > .runner.pid
-echo "Runner started in background (PID: $!), logging to runner.log"
-WRAPPER
-    chmod +x "$GHR_DIR/run-in-background.sh"
-
-    # Try to enable the systemd user service
     if systemctl --user daemon-reload 2>/dev/null && \
        systemctl --user enable "actions-runner-${GHR_NAME}.service" 2>/dev/null && \
        systemctl --user start "actions-runner-${GHR_NAME}.service" 2>/dev/null; then
         success "Systemd user service installed and started"
         info "To auto-start on login: loginctl enable-linger $(whoami)"
     else
-        warn "Systemd user service failed. Using background wrapper."
-        "$GHR_DIR/run-in-background.sh"
+        warn "Systemd user service failed. Runner is configured but not running as a service."
     fi
 }
 
@@ -550,36 +509,28 @@ verify_runner() {
 
     local svc_ok=false
 
-    # Check service status
-    if [[ "$RUNNER_PLATFORM" == "linux" ]]; then
-        # Check system-level systemd service (from svc.sh)
-        local unit="actions.runner.$(echo "$GHR_REPO" | tr '/' '-').${GHR_NAME}.service"
-        if systemctl is-active "$unit" &>/dev/null 2>&1; then
-            svc_ok=true
-        fi
-        # Check user-level systemd service (from _create_systemd_user_unit)
-        if [[ "$svc_ok" == "false" ]]; then
-            local user_unit="actions-runner-${GHR_NAME}.service"
-            if systemctl --user is-active "$user_unit" &>/dev/null 2>&1; then
+    # Check service status if --service was used
+    if [[ "${GHR_SERVICE:-false}" == "true" ]]; then
+        if [[ "$RUNNER_PLATFORM" == "linux" ]]; then
+            local unit="actions.runner.$(echo "$GHR_REPO" | tr '/' '-').${GHR_NAME}.service"
+            if systemctl is-active "$unit" &>/dev/null 2>&1; then
+                svc_ok=true
+            fi
+            if [[ "$svc_ok" == "false" ]]; then
+                local user_unit="actions-runner-${GHR_NAME}.service"
+                if systemctl --user is-active "$user_unit" &>/dev/null 2>&1; then
+                    svc_ok=true
+                fi
+            fi
+        elif [[ "$RUNNER_PLATFORM" == "osx" && "$RUNNER_SVC" == "launchd" ]]; then
+            if launchctl list 2>/dev/null | grep -q "actions.runner"; then
                 svc_ok=true
             fi
         fi
-        # Check for background process (PID file from run-in-background.sh)
-        if [[ "$svc_ok" == "false" && -f "$GHR_DIR/.runner.pid" ]]; then
-            local pid
-            pid="$(cat "$GHR_DIR/.runner.pid" 2>/dev/null || true)"
-            if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
-                svc_ok=true
-            fi
-        fi
-    elif [[ "$RUNNER_PLATFORM" == "osx" && "$RUNNER_SVC" == "launchd" ]]; then
-        if launchctl list 2>/dev/null | grep -q "actions.runner"; then
-            svc_ok=true
-        fi
-    fi
 
-    if [[ "$svc_ok" == "false" ]]; then
-        warn "Runner service not detected. It may still be starting up."
+        if [[ "$svc_ok" == "false" ]]; then
+            warn "Runner service not detected. It may still be starting up."
+        fi
     fi
 
     # API check
@@ -626,14 +577,13 @@ uninstall_runner() {
         cd "$GHR_DIR"
 
         if [[ -f "svc.sh" ]]; then
-            if [[ "$RUNNER_PLATFORM" == "linux" ]]; then
-                sudo ./svc.sh stop 2>/dev/null || true
-                sudo ./svc.sh uninstall 2>/dev/null || true
-            elif [[ "$RUNNER_PLATFORM" == "osx" ]]; then
-                ./svc.sh stop 2>/dev/null || true
-                ./svc.sh uninstall 2>/dev/null || true
-            fi
+            ./svc.sh stop 2>/dev/null || true
+            ./svc.sh uninstall 2>/dev/null || true
         fi
+        # Also stop user-level systemd
+        systemctl --user stop "actions-runner-${GHR_NAME}.service" 2>/dev/null || true
+        systemctl --user disable "actions-runner-${GHR_NAME}.service" 2>/dev/null || true
+        rm -f ~/Library/LaunchAgents/actions.runner.*.${GHR_NAME}.plist 2>/dev/null || true
 
         # Remove runner config
         if [[ -f "config.sh" ]]; then
@@ -674,6 +624,7 @@ Usage:
 Options:
   --uninstall     Remove an existing runner from GitHub and stop the service
   --replace       Replace an existing runner with the same name (default: true)
+  --service       Install as a systemd/launchd service (opt-in, default: no)
   --dry-run, -n   Show what would happen without making changes
   --debug, -v     Enable verbose debug output
   --help          Show this help message
@@ -682,7 +633,7 @@ Environment variables (override defaults):
   GHR_REPO        owner/repo to register the runner for (prompted if unset)
   GHR_NAME        Runner name (default: hostname)
   GHR_LABELS      Comma-separated labels (auto-detected if unset)
-  GHR_DIR         Install directory (default: /opt/actions-runner)
+  GHR_DIR         Install directory (default: ~/actions-runner/<repo>)
   GHR_WORK        Work subdirectory (default: _work)
   GHR_REPLACE     Replace existing runner (default: true)
 
@@ -691,8 +642,11 @@ Examples:
   ./setup-runner.sh
 
   # Unattended mode
-  GHR_REPO=owner/repo GHR_NAME=my-runner GHR_LABELS=self-hosted,linux \\
+  GHR_REPO=owner/repo GHR_NAME=my-runner GHR_LABELS=self-hosted,linux \
     ./setup-runner.sh
+
+  # With systemd service
+  GHR_REPO=owner/repo ./setup-runner.sh --service
 
   # Uninstall
   ./setup-runner.sh --uninstall
@@ -717,6 +671,7 @@ main() {
         case "$1" in
             --uninstall) do_uninstall=true; shift ;;
             --replace)   export GHR_REPLACE=true; shift ;;
+            --service)   export GHR_SERVICE=true; shift ;;
             --dry-run|-n) DRY_RUN=true; shift ;;
             --debug|-v)   DEBUG=true; shift ;;
             --help|-h)   show_help; exit 0 ;;
