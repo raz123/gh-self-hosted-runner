@@ -735,8 +735,7 @@ main() {
     fi
     export GHR_UNATTENDED="$unattended"
 
-    # Set defaults — runner goes in ./actions-runner subfolder
-    export GHR_DIR="${GHR_DIR:-$PWD/actions-runner}"
+    # Set defaults (GHR_DIR set after select_repo since it depends on repo name)
     export GHR_WORK="${GHR_WORK:-_work}"
     export GHR_NAME="${GHR_NAME:-$(hostname | cut -d. -f1)}"
     export GHR_REPLACE="${GHR_REPLACE:-true}"
@@ -750,9 +749,13 @@ main() {
 
     if [[ "$do_uninstall" == "true" ]]; then
         select_repo
+        # Default GHR_DIR: ~/actions-runner/<repo-name>
+        export GHR_DIR="${GHR_DIR:-$HOME/actions-runner/$(echo "$GHR_REPO" | cut -d/ -f2)}"
         uninstall_runner
     else
         select_repo
+        # Default GHR_DIR: ~/actions-runner/<repo-name>
+        export GHR_DIR="${GHR_DIR:-$HOME/actions-runner/$(echo "$GHR_REPO" | cut -d/ -f2)}"
         detect_labels
         install_runner
         verify_runner
