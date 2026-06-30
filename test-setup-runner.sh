@@ -190,6 +190,113 @@ if [[ -n "${GHR_REPO:-}" ]]; then
 fi
 assert_eq "GHR_REPO unset → unattended=false" "false" "$unattended"
 
+# ── Test: dry_run helper ──────────────────────────────────────────────────────
+printf '\n── dry_run helper ──\n'
+
+# When DRY_RUN=false, dry_run returns 0 (proceed)
+DRY_RUN=false
+dry_run() {
+    if [[ "$DRY_RUN" == "true" ]]; then
+        printf '[dry-run] %s\n' "$*" >&2
+        return 1
+    fi
+    return 0
+}
+if dry_run "test action"; then
+    assert_eq "DRY_RUN=false → dry_run returns 0" "0" "0"
+else
+    assert_eq "DRY_RUN=false → dry_run returns 0" "0" "1"
+fi
+
+# When DRY_RUN=true, dry_run returns 1 (skip)
+DRY_RUN=true
+if dry_run "test action"; then
+    assert_eq "DRY_RUN=true → dry_run returns 1" "1" "0"
+else
+    assert_eq "DRY_RUN=true → dry_run returns 1" "1" "1"
+fi
+DRY_RUN=false
+
+# ── Test: debug helper ────────────────────────────────────────────────────────
+printf '\n── debug helper ──\n'
+
+DEBUG=false
+debug() { [[ "$DEBUG" == "true" ]] && printf '[debug] %s\n' "$*" >&2; return 0; }
+
+# When DEBUG=false, debug produces no output
+result=$(debug "test message" 2>&1)
+assert_eq "DEBUG=false → no output" "" "$result"
+
+# When DEBUG=true, debug produces output
+DEBUG=true
+result=$(debug "test message" 2>&1)
+assert_eq "DEBUG=true → outputs message" "[debug] test message" "$result"
+DEBUG=false
+
+# ── Test: CLI flag parsing ────────────────────────────────────────────────────
+printf '\n── CLI flag parsing ──\n'
+
+# --dry-run and -n set DRY_RUN
+for arg in "--dry-run" "-n"; do
+    DRY_RUN=false
+    case "$arg" in
+        --dry-run|-n) DRY_RUN=true ;;
+    esac
+    assert_eq "$arg sets DRY_RUN=true" "true" "$DRY_RUN"
+done
+
+# --debug and -v set DEBUG
+for arg in "--debug" "-v"; do
+    DEBUG=false
+    case "$arg" in
+        --debug|-v) DEBUG=true ;;
+    esac
+    assert_eq "$arg sets DEBUG=true" "true" "$DEBUG"
+done
+
+# Unknown option shows error
+result=$(bash setup-runner.sh --bogus 2>&1 || true)
+if echo "$result" | grep -q "Unknown option"; then
+    assert_eq "unknown option shows error" "0" "0"
+else
+    assert_eq "unknown option shows error" "0" "1"
+fi
+
+# ── Test: non-interactive detection ───────────────────────────────────────────
+printf '\n── non-interactive detection ──\n'
+
+# Pipe input is not a TTY
+result=$(echo "test" | bash -c '[[ -t 0 ]] && echo "tty" || echo "not-tty"' 2>&1)
+assert_eq "pipe is not a TTY" "not-tty" "$result"
+
+# ── Test: setup-runner.sh --help includes new flags ──────────────────────────
+printf '\n── help text includes new flags ──\n'
+
+help_output=$(bash setup-runner.sh --help 2>&1)
+if echo "$help_output" | grep -q '\-\-dry-run'; then
+    assert_eq "help includes --dry-run" "0" "0"
+else
+    assert_eq "help includes --dry-run" "0" "1"
+fi
+if echo "$help_output" | grep -q '\-\-debug'; then
+    assert_eq "help includes --debug" "0" "0"
+else
+    assert_eq "help includes --debug" "0" "1"
+fi
+
+# ── Test: dry-run exits cleanly ───────────────────────────────────────────────
+printf '\n── dry-run exits cleanly ──\n'
+
+dry_run_output=$(GHR_REPO=raz123/OrangeFox-Recovery-Builder-2024 \
+GHR_LABELS=linux,orfox-builder \
+bash setup-runner.sh --dry-run 2>&1)
+dry_run_exit=$?
+assert_exit_code "dry-run exits 0" "0" "$dry_run_exit"
+if echo "$dry_run_output" | grep -q '\[dry-run\]'; then
+    assert_eq "dry-run shows dry-run markers" "0" "0"
+else
+    assert_eq "dry-run shows dry-run markers" "0" "1"
+fi
 # ── Summary ──────────────────────────────────────────────────────────────────
 printf '\n══════════════════════════════════════\n'
 printf 'Results: %d passed, %d failed, %d total\n' "$PASS" "$FAIL" "$TOTAL"

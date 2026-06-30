@@ -19,6 +19,18 @@ warn()    { printf '\033[1;33m⚠ %s\033[0m\n' "$*" >&2; }
 error()   { printf '\033[1;31m✖ %s\033[0m\n' "$*" >&2; }
 success() { printf '\033[1;32m✔ %s\033[0m\n' "$*" >&2; }
 
+# Debug & dry-run
+DEBUG=false
+DRY_RUN=false
+debug()    { [[ "$DEBUG" == "true" ]] && printf '\033[1;90m  [debug] %s\033[0m\n' "$*" >&2; return 0; }
+dry_run()  {
+    if [[ "$DRY_RUN" == "true" ]]; then
+        info "[dry-run] $*"
+        return 1  # caller uses || to skip
+    fi
+    return 0  # caller proceeds
+}
+
 # ── YAML label parser ────────────────────────────────────────────────────────
 # Reads YAML text from stdin, extracts runs-on: values, excludes hosted labels,
 # deduplicates, outputs comma-separated.
@@ -54,6 +66,7 @@ parse_labels_from_yaml() {
 
 # ── Phase 1: Prerequisites ───────────────────────────────────────────────────
 check_prereqs() {
+    debug "check_prereqs: starting"
     info "Checking prerequisites..."
 
     # gh CLI
@@ -138,6 +151,7 @@ select_repo() {
         return 0
     fi
 
+    debug "select_repo: listing repos"
     info "Fetching repositories with admin access..."
     local repos
     repos="$(gh api user/repos --paginate --jq '.[] | select(.permissions.admin == true) | .full_name' 2>/dev/null || true)"
@@ -163,7 +177,7 @@ select_repo() {
         ) > "${tmpdir}/${repo//\//_}" &
         running=$((running + 1))
         if (( running >= max_jobs )); then
-            wait -n 2>/dev/null || wait
+            wait 2>/dev/null || true
             running=$((running - 1))
         fi
     done <<< "$repos"
@@ -186,6 +200,7 @@ select_repo() {
         error "Failed to fetch repository data."
         exit 1
     fi
+    debug "select_repo: found ${#sorted_repos[@]} repos"
 
     # Build menu
     info "Select a repository:"
@@ -204,14 +219,20 @@ select_repo() {
     if command -v fzf &>/dev/null; then
         choice="$(printf '%s\n' "${menu_items[@]}" | fzf --height=15 --reverse --prompt="Select repo: " | sed 's/ (.*//')"
     else
-        PS3="Pick a repo (number): "
-        select opt in "${menu_items[@]}"; do
-            if [[ -n "$opt" ]]; then
-                choice="${opt%% (*}"
-                break
-            fi
-            warn "Invalid selection. Try again."
-        done
+        if [[ -t 0 ]]; then
+            PS3="Pick a repo (number): "
+            select opt in "${menu_items[@]}"; do
+                if [[ -n "$opt" ]]; then
+                    choice="${opt%% (*}"
+                    break
+                fi
+                warn "Invalid selection. Try again."
+            done
+        else
+            error "No terminal available for interactive selection."
+            error "Set GHR_REPO env var for non-interactive mode."
+            exit 1
+        fi
     fi
 
     if [[ -z "$choice" ]]; then
@@ -230,11 +251,13 @@ detect_labels() {
         return 0
     fi
 
+    debug "detect_labels: fetching workflows for $GHR_REPO"
     info "Detecting runner labels from workflows..."
 
     local detected_labels=""
     local workflow_files
     workflow_files="$(gh api "repos/${GHR_REPO}/contents/.github/workflows" --jq '.[].path' 2>/dev/null || true)"
+    debug "detect_labels: found workflow files: $workflow_files"
 
     if [[ -z "$workflow_files" ]]; then
         if [[ "${GHR_UNATTENDED:-false}" == "true" ]]; then
@@ -242,8 +265,14 @@ detect_labels() {
             exit 1
         fi
         warn "No workflow files found in $GHR_REPO."
-        info "Enter runner labels manually (comma-separated, e.g. self-hosted,linux,my-label): "
-        read -r GHR_LABELS
+        if [[ -t 0 ]]; then
+            info "Enter runner labels manually (comma-separated, e.g. self-hosted,linux,my-label): "
+            read -r GHR_LABELS
+        else
+            error "No self-hosted runner labels found and stdin is not a terminal."
+            error "Set GHR_LABELS env var for non-interactive mode."
+            exit 1
+        fi
         if [[ -z "$GHR_LABELS" ]]; then
             error "No labels provided."
             exit 1
@@ -261,6 +290,7 @@ detect_labels() {
     done <<< "$workflow_files"
 
     detected_labels="$(echo "$all_content" | parse_labels_from_yaml)"
+    debug "detect_labels: parsed labels: $detected_labels"
 
     if [[ -z "$detected_labels" ]]; then
         if [[ "${GHR_UNATTENDED:-false}" == "true" ]]; then
@@ -268,8 +298,14 @@ detect_labels() {
             exit 1
         fi
         warn "No self-hosted runner labels found in workflows."
-        info "Enter runner labels manually (comma-separated): "
-        read -r GHR_LABELS
+        if [[ -t 0 ]]; then
+            info "Enter runner labels manually (comma-separated): "
+            read -r GHR_LABELS
+        else
+            error "No self-hosted runner labels found and stdin is not a terminal."
+            error "Set GHR_LABELS env var for non-interactive mode."
+            exit 1
+        fi
         if [[ -z "$GHR_LABELS" ]]; then
             error "No labels provided."
             exit 1
@@ -280,9 +316,14 @@ detect_labels() {
             info "Auto-detected labels: $GHR_LABELS"
         else
             info "Auto-detected labels: $detected_labels"
-            info "Press Enter to accept, or type new labels (comma-separated): "
-            read -r user_input
-            GHR_LABELS="${user_input:-$detected_labels}"
+            if [[ -t 0 ]]; then
+                info "Press Enter to accept, or type new labels (comma-separated): "
+                read -r user_input
+                GHR_LABELS="${user_input:-$detected_labels}"
+            else
+                GHR_LABELS="$detected_labels"
+                info "Non-interactive: using auto-detected labels"
+            fi
         fi
     fi
 
@@ -291,6 +332,7 @@ detect_labels() {
 
 # ── Phase 4: Install & register ──────────────────────────────────────────────
 install_runner() {
+    debug "install_runner: GHR_DIR=$GHR_DIR"
     info "Installing runner to $GHR_DIR..."
 
     # Create directory
@@ -298,8 +340,10 @@ install_runner() {
         error "Runner already installed at $GHR_DIR. Use --replace to overwrite or --uninstall first."
         exit 1
     fi
-    mkdir -p "$GHR_DIR" 2>/dev/null || sudo mkdir -p "$GHR_DIR"
-    sudo chown "$(id -u):$(id -g)" "$GHR_DIR" 2>/dev/null || true
+    if dry_run "Would create directory: $GHR_DIR"; then
+        mkdir -p "$GHR_DIR" 2>/dev/null || sudo mkdir -p "$GHR_DIR"
+        sudo chown "$(id -u):$(id -g)" "$GHR_DIR" 2>/dev/null || true
+    fi
     # Remove existing runner config before re-configuration (needed for --replace idempotency)
     if [[ -f "$GHR_DIR/.runner" ]] && [[ "${GHR_REPLACE:-true}" == "true" ]]; then
         info "Removing existing runner configuration..."
@@ -326,82 +370,98 @@ install_runner() {
     fi
 
     # Generate registration token
-    info "Generating registration token..."
-    local runner_token
-    runner_token="$(gh api "repos/${GHR_REPO}/actions/runners/registration-token" -X POST --jq '.token' 2>/dev/null)" || {
-        error "Cannot generate registration token. Ensure you have admin access to $GHR_REPO."
-        exit 1
-    }
-    if [[ -z "$runner_token" ]]; then
-        error "Empty registration token received."
-        exit 1
+    local runner_token=""
+    if dry_run "Would generate registration token for ${GHR_REPO}"; then
+        info "Generating registration token..."
+        runner_token="$(gh api "repos/${GHR_REPO}/actions/runners/registration-token" -X POST --jq '.token' 2>/dev/null)" || {
+            error "Cannot generate registration token for $GHR_REPO."
+            error "Ensure you have admin (not just write) access."
+            exit 1
+        }
+        if [[ -z "$runner_token" ]]; then
+            error "Empty registration token received."
+            exit 1
+        fi
     fi
 
     # Download latest runner
-    info "Fetching latest runner release..."
     local latest_tag latest_version runner_file
-    latest_tag="$(curl -sfL "$RUNNER_RELEASES_URL" | jq -r '.tag_name')" || {
-        error "Failed to fetch runner release info from GitHub API."
-        exit 1
-    }
-    latest_version="${latest_tag#v}"
-    runner_file="actions-runner-${RUNNER_PLATFORM}-${RUNNER_ARCH}-${latest_version}.tar.gz"
-
-    if [[ ! -f "$GHR_DIR/$runner_file" ]]; then
-        info "Downloading $runner_file..."
-        curl -sL "${GITHUB_DOWNLOAD}/${latest_tag}/${runner_file}" -o "$GHR_DIR/$runner_file" || {
-            error "Download failed: ${GITHUB_DOWNLOAD}/${latest_tag}/${runner_file}"
+    if dry_run "Would fetch latest runner release and download"; then
+        info "Fetching latest runner release..."
+        latest_tag="$(curl -sfL "$RUNNER_RELEASES_URL" | jq -r '.tag_name')" || {
+            error "Failed to fetch runner release info. Check network connection."
+            error "URL: $RUNNER_RELEASES_URL"
             exit 1
         }
-    else
-        info "Runner archive already downloaded."
+        latest_version="${latest_tag#v}"
+        runner_file="actions-runner-${RUNNER_PLATFORM}-${RUNNER_ARCH}-${latest_version}.tar.gz"
+        debug "install_runner: downloading $runner_file"
+
+        if [[ ! -f "$GHR_DIR/$runner_file" ]]; then
+            info "Downloading $runner_file..."
+            curl -sL "${GITHUB_DOWNLOAD}/${latest_tag}/${runner_file}" -o "$GHR_DIR/$runner_file" || {
+                error "Download failed: ${GITHUB_DOWNLOAD}/${latest_tag}/${runner_file}"
+                exit 1
+            }
+        else
+            info "Runner archive already downloaded."
+        fi
+
+        info "Extracting runner..."
+        tar xzf "$GHR_DIR/$runner_file" -C "$GHR_DIR" || {
+            error "Failed to extract runner archive."
+            exit 1
+        }
     fi
 
-    info "Extracting runner..."
-    tar xzf "$GHR_DIR/$runner_file" -C "$GHR_DIR" || {
-        error "Failed to extract runner archive."
-        exit 1
-    }
-
     # Configure runner
-    info "Configuring runner..."
-    cd "$GHR_DIR"
+    debug "install_runner: configuring runner"
     local replace_flag=""
     if [[ "${GHR_REPLACE:-true}" == "true" ]]; then
         replace_flag="--replace"
     fi
-    ./config.sh \
-        --url "https://github.com/${GHR_REPO}" \
-        --token "$runner_token" \
-        --name "$GHR_NAME" \
-        --labels "$GHR_LABELS" \
-        --work "$GHR_WORK" \
-        --unattended \
-        $replace_flag || {
-        error "Runner configuration failed."
-        exit 1
-    }
+    if dry_run "Would configure runner for ${GHR_REPO} with name ${GHR_NAME}"; then
+        info "Configuring runner..."
+        cd "$GHR_DIR"
+        ./config.sh \
+            --url "https://github.com/${GHR_REPO}" \
+            --token "$runner_token" \
+            --name "$GHR_NAME" \
+            --labels "$GHR_LABELS" \
+            --work "$GHR_WORK" \
+            --unattended \
+            $replace_flag || {
+            error "Runner config.sh failed. Check logs above for details."
+            error "Common causes: token expired, repo name typo, insufficient permissions."
+            exit 1
+        }
+    fi
 
     # Install service
-    info "Installing as service..."
-    if [[ "$RUNNER_SVC" != "none" ]]; then
-        if [[ "$RUNNER_PLATFORM" == "linux" ]]; then
-            sudo ./svc.sh install && sudo ./svc.sh start || {
-                warn "svc.sh failed. Creating background wrapper instead."
-                _create_background_wrapper
-            }
-        elif [[ "$RUNNER_PLATFORM" == "osx" ]]; then
-            ./svc.sh install && ./svc.sh start || {
-                warn "svc.sh failed. Creating background wrapper instead."
-                _create_background_wrapper
-            }
+    debug "install_runner: installing service"
+    if dry_run "Would install and start service (${RUNNER_SVC})"; then
+        info "Installing as service..."
+        if [[ "$RUNNER_SVC" != "none" ]]; then
+            if [[ "$RUNNER_PLATFORM" == "linux" ]]; then
+                sudo ./svc.sh install && sudo ./svc.sh start || {
+                    warn "svc.sh failed. Creating background wrapper instead."
+                    _create_background_wrapper
+                }
+            elif [[ "$RUNNER_PLATFORM" == "osx" ]]; then
+                ./svc.sh install && ./svc.sh start || {
+                    warn "svc.sh failed. Creating background wrapper instead."
+                    _create_background_wrapper
+                }
+            fi
+        else
+            _create_background_wrapper
         fi
-    else
-        _create_background_wrapper
     fi
 
     # Clean up tarball
-    rm -f "$GHR_DIR/$runner_file"
+    if [[ "$DRY_RUN" != "true" ]]; then
+        rm -f "$GHR_DIR/$runner_file"
+    fi
 
     success "Runner installed and started!"
 }
@@ -419,6 +479,7 @@ WRAPPER
 
 # ── Phase 5: Verify ──────────────────────────────────────────────────────────
 verify_runner() {
+    debug "verify_runner: checking status"
     info "Verifying runner status..."
     sleep 3
 
@@ -468,12 +529,14 @@ verify_runner() {
 
 # ── Phase 6: Uninstall ───────────────────────────────────────────────────────
 uninstall_runner() {
+    debug "uninstall_runner: generating removal token"
     info "Uninstalling runner from $GHR_REPO..."
 
     # Generate removal token
     local removal_token
     removal_token="$(gh api "repos/${GHR_REPO}/actions/runners/remove-token" -X POST --jq '.token' 2>/dev/null)" || {
-        error "Cannot generate removal token. Ensure you have admin access to $GHR_REPO."
+        error "Cannot generate removal token for $GHR_REPO."
+        error "Ensure you have admin access. Token generation requires admin scope."
         exit 1
     }
 
@@ -493,9 +556,11 @@ uninstall_runner() {
 
         # Remove runner config
         if [[ -f "config.sh" ]]; then
-            ./config.sh remove --token "$removal_token" 2>/dev/null || {
-                warn "config.sh remove failed. Falling back to API deletion."
-            }
+            if dry_run "Would remove runner config via config.sh"; then
+                ./config.sh remove --token "$removal_token" 2>/dev/null || {
+                    warn "config.sh remove failed. Falling back to API deletion."
+                }
+            fi
         fi
     fi
 
@@ -506,9 +571,11 @@ uninstall_runner() {
            '.runners[] | select(.name == $name) | .id' 2>/dev/null || true)"
     if [[ -n "$runner_id" ]]; then
         info "Removing runner via API (ID: $runner_id)..."
-        gh api "repos/${GHR_REPO}/actions/runners/${runner_id}" -X DELETE 2>/dev/null || {
-            warn "API deletion failed. Runner may need manual removal."
-        }
+        if dry_run "Would remove runner via API (ID: $runner_id)"; then
+            gh api "repos/${GHR_REPO}/actions/runners/${runner_id}" -X DELETE 2>/dev/null || {
+                warn "API deletion failed. Runner may need manual removal."
+            }
+        fi
     fi
 
     success "Runner removed from GitHub."
@@ -526,6 +593,8 @@ Usage:
 Options:
   --uninstall     Remove an existing runner from GitHub and stop the service
   --replace       Replace an existing runner with the same name (default: true)
+  --dry-run, -n   Show what would happen without making changes
+  --debug, -v     Enable verbose debug output
   --help          Show this help message
 
 Environment variables (override defaults):
@@ -552,6 +621,14 @@ EOF
 # ── Main ──────────────────────────────────────────────────────────────────────
 main() {
     trap 'echo; warn "Interrupted. Run --uninstall to clean up if needed."; exit 130' INT TERM
+    cleanup() {
+        local exit_code=$?
+        if [[ $exit_code -ne 0 && $exit_code -ne 130 ]]; then
+            warn "Script exited with code $exit_code."
+            warn "If install was interrupted, run: $0 --uninstall"
+        fi
+    }
+    trap cleanup EXIT
 
     local do_uninstall=false
 
@@ -559,6 +636,8 @@ main() {
         case "$1" in
             --uninstall) do_uninstall=true; shift ;;
             --replace)   export GHR_REPLACE=true; shift ;;
+            --dry-run|-n) DRY_RUN=true; shift ;;
+            --debug|-v)   DEBUG=true; shift ;;
             --help|-h)   show_help; exit 0 ;;
             *)
                 error "Unknown option: $1"
@@ -567,6 +646,7 @@ main() {
                 ;;
         esac
     done
+    export DRY_RUN DEBUG
     # Detect unattended mode (GHR_REPO set from env = no prompts)
     local unattended=false
     if [[ -n "${GHR_REPO:-}" ]]; then
