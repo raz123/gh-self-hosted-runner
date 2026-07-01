@@ -6,6 +6,7 @@ set -euo pipefail
 # Works on Linux (systemd) and macOS (launchd). Uses gh CLI for auth & API.
 # ──────────────────────────────────────────────────────────────────────────────
 
+VERSION="1.6.4"
 GITHUB_API="https://api.github.com"
 RUNNER_RELEASES_URL="https://api.github.com/repos/actions/runner/releases/latest"
 GITHUB_DOWNLOAD="https://github.com/actions/runner/releases/download"
@@ -627,7 +628,7 @@ uninstall_runner() {
 # ── Help ─────────────────────────────────────────────────────────────────────
 show_help() {
     cat << 'EOF'
-⚡ GitHub Self-Hosted Runner Setup
+⚡ GitHub Self-Hosted Runner Setup (v${VERSION})
 
 Usage:
   setup-runner.sh [OPTIONS]
@@ -711,6 +712,7 @@ main() {
         exit 1
     fi
 
+    info "gh-self-hosted-runner v${VERSION}"
     check_prereqs
 
     if [[ "$do_uninstall" == "true" ]]; then
