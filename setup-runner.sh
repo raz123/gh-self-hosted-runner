@@ -354,6 +354,15 @@ install_runner() {
     if [[ -f "$GHR_DIR/.runner" ]] && [[ "${GHR_REPLACE:-true}" == "true" ]]; then
         info "Removing existing runner configuration..."
         cd "$GHR_DIR"
+        # Kill any running runner processes in this directory
+        local running_pid
+        running_pid="$(pgrep -f "$GHR_DIR/bin/Runner" 2>/dev/null || true)"
+        if [[ -n "$running_pid" ]]; then
+            info "Stopping existing runner process (PID: $running_pid)..."
+            kill "$running_pid" 2>/dev/null || true
+            sleep 2
+            kill -9 "$running_pid" 2>/dev/null || true
+        fi
         # Stop user-level systemd service if it exists
         systemctl --user stop "actions-runner-${GHR_NAME}.service" 2>/dev/null || true
         systemctl --user disable "actions-runner-${GHR_NAME}.service" 2>/dev/null || true
