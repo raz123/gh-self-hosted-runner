@@ -6,7 +6,7 @@ set -euo pipefail
 # Works on Linux (systemd) and macOS (launchd). Uses gh CLI for auth & API.
 # ──────────────────────────────────────────────────────────────────────────────
 
-VERSION="1.7.0"
+VERSION="1.7.2"
 GITHUB_API="https://api.github.com"
 RUNNER_RELEASES_URL="https://api.github.com/repos/actions/runner/releases/latest"
 GITHUB_DOWNLOAD="https://github.com/actions/runner/releases/download"
