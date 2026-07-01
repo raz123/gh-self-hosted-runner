@@ -6,7 +6,7 @@ set -euo pipefail
 # Works on Linux (systemd) and macOS (launchd). Uses gh CLI for auth & API.
 # ──────────────────────────────────────────────────────────────────────────────
 
-VERSION="1.6.4"
+VERSION="1.7.0"
 GITHUB_API="https://api.github.com"
 RUNNER_RELEASES_URL="https://api.github.com/repos/actions/runner/releases/latest"
 GITHUB_DOWNLOAD="https://github.com/actions/runner/releases/download"
@@ -467,11 +467,14 @@ install_runner() {
 
     # Interactive prompt: launch the runner now?
     # Use /dev/tty (always the terminal, even with curl|bash pipes)
-    if [[ -r /dev/tty ]] && [[ "${GHR_SERVICE:-false}" != "true" ]]; then
+    if [[ "${GHR_SERVICE:-false}" != "true" ]]; then
+        local launch_choice=""
         printf '\033[1;34m→ Launch the runner now? [Y/n]: \033[0m' >&2
         if read -r launch_choice </dev/tty 2>/dev/null; then
             launch_choice="${launch_choice,,}"  # lowercase
-            if [[ "$launch_choice" != "n" && "$launch_choice" != "no" ]]; then
+        fi
+        if [[ "$launch_choice" != "n" && "$launch_choice" != "no" ]]; then
+            if [[ -r "$GHR_DIR/run.sh" ]]; then
                 info "Starting runner... (Ctrl+C to stop)"
                 cd "$GHR_DIR"
                 exec ./run.sh
