@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
+# Auto-recover from deleted working directory (before set -e catches it)
+cd "$HOME" 2>/dev/null || cd / 2>/dev/null || true
 set -euo pipefail
 
 # ──────────────────────────────────────────────────────────────────────────────
 # GitHub Self-Hosted Runner Setup — Universal, interactive, single-file script.
 # Works on Linux (systemd) and macOS (launchd). Uses gh CLI for auth & API.
 # ──────────────────────────────────────────────────────────────────────────────
-
-VERSION="1.8.0"
+VERSION="1.9.0"
 GITHUB_API="https://api.github.com"
 RUNNER_RELEASES_URL="https://api.github.com/repos/actions/runner/releases/latest"
 GITHUB_DOWNLOAD="https://github.com/actions/runner/releases/download"
@@ -70,6 +71,12 @@ parse_labels_from_yaml() {
 check_prereqs() {
     debug "check_prereqs: starting"
     info "Checking prerequisites..."
+    # Root is blocked by GitHub's runner config.sh
+    if [[ "$(id -u)" == "0" ]]; then
+        error "Running as root. GitHub Actions runner refuses to configure as root."
+        error "Run as a regular user instead, or set GHR_DIR to a writable path."
+        exit 1
+    fi
 
     # gh CLI
     if ! command -v gh &>/dev/null; then
@@ -680,10 +687,6 @@ EOF
 # ── Main ──────────────────────────────────────────────────────────────────────
 main() {
     trap 'echo; warn "Interrupted. Run --uninstall to clean up if needed."; exit 130' INT TERM
-    # Recover from deleted working directory (getcwd error)
-    if ! pwd &>/dev/null; then
-        cd "$HOME" || cd / || { error "Cannot access any directory"; exit 1; }
-    fi
     cleanup() {
         local exit_code=$?
         if [[ $exit_code -ne 0 && $exit_code -ne 130 ]]; then
