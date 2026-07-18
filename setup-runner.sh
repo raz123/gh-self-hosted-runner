@@ -6,7 +6,7 @@ set -euo pipefail
 # Works on Linux (systemd) and macOS (launchd). Uses gh CLI for auth & API.
 # ──────────────────────────────────────────────────────────────────────────────
 
-VERSION="1.7.2"
+VERSION="1.8.0"
 GITHUB_API="https://api.github.com"
 RUNNER_RELEASES_URL="https://api.github.com/repos/actions/runner/releases/latest"
 GITHUB_DOWNLOAD="https://github.com/actions/runner/releases/download"
@@ -77,7 +77,7 @@ check_prereqs() {
         exit 1
     fi
     if ! gh auth status &>/dev/null; then
-        error "gh CLI not authenticated. Run: gh auth login"
+        error "gh CLI not authenticated for user '$(whoami)'. Run: gh auth login"
         exit 1
     fi
     success "gh CLI authenticated"
@@ -680,6 +680,10 @@ EOF
 # ── Main ──────────────────────────────────────────────────────────────────────
 main() {
     trap 'echo; warn "Interrupted. Run --uninstall to clean up if needed."; exit 130' INT TERM
+    # Recover from deleted working directory (getcwd error)
+    if ! pwd &>/dev/null; then
+        cd "$HOME" || cd / || { error "Cannot access any directory"; exit 1; }
+    fi
     cleanup() {
         local exit_code=$?
         if [[ $exit_code -ne 0 && $exit_code -ne 130 ]]; then
