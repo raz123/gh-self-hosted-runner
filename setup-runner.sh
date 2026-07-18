@@ -541,14 +541,14 @@ install_runner() {
         fi
         if [[ "$launch_choice" != "n" && "$launch_choice" != "no" ]]; then
             if [[ -r "$GHR_DIR/run.sh" ]]; then
-                info "Starting runner... (Ctrl+C to stop)"
+                info "Starting runner for ${GHR_REPO}... (Ctrl+C to stop)"
                 cd "$GHR_DIR"
                 exec ./run.sh
             fi
         fi
     fi
 
-    info "To run the runner later:"
+    info "To run the runner later for ${GHR_REPO}:"
     info "  cd $GHR_DIR && ./run.sh"
 }
 
