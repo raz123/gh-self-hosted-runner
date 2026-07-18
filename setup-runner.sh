@@ -205,7 +205,7 @@ select_repo() {
     done < <(
         for f in "$tmpdir"/*; do
             [[ -f "$f" ]] && cat "$f"
-        done | sort -t$'\t' -k1 -rn
+        done | sort -t$'\t' -k4,4r -k1,1rn
     )
 
     rm -rf "$tmpdir"
