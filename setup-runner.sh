@@ -7,7 +7,7 @@ set -euo pipefail
 # GitHub Self-Hosted Runner Setup — Universal, interactive, single-file script.
 # Works on Linux (systemd) and macOS (launchd). Uses gh CLI for auth & API.
 # ──────────────────────────────────────────────────────────────────────────────
-VERSION="1.9.0"
+VERSION="1.10.0"
 GITHUB_API="https://api.github.com"
 RUNNER_RELEASES_URL="https://api.github.com/repos/actions/runner/releases/latest"
 GITHUB_DOWNLOAD="https://github.com/actions/runner/releases/download"
@@ -141,6 +141,25 @@ check_prereqs() {
 }
 
 # ── Phase 2: Repo selection ──────────────────────────────────────────────────
+# Convert ISO date to relative time (e.g., "3d ago", "1h ago")
+time_ago() {
+    local date_str="$1"
+    local now epoch_s diff
+    now="$(date +%s)"
+    epoch_s="$(date -d "$date_str" +%s 2>/dev/null || date -j -f "%Y-%m-%dT%H:%M:%SZ" "$date_str" +%s 2>/dev/null || echo 0)"
+    if [[ "$epoch_s" == "0" ]]; then
+        echo ""
+        return
+    fi
+    diff=$((now - epoch_s))
+    if (( diff < 60 )); then       echo "${diff}s ago"
+    elif (( diff < 3600 )); then   echo "$((diff / 60))m ago"
+    elif (( diff < 86400 )); then  echo "$((diff / 3600))h ago"
+    elif (( diff < 604800 )); then echo "$((diff / 86400))d ago"
+    else                            echo "$((diff / 604800))w ago"
+    fi
+}
+
 select_repo() {
     if [[ -n "${GHR_REPO:-}" ]]; then
         info "Using repo from env: $GHR_REPO"
@@ -150,7 +169,7 @@ select_repo() {
     debug "select_repo: listing repos"
     info "Fetching repositories with admin access..."
     local repos
-    repos="$(gh api user/repos --paginate --jq '.[] | select(.permissions.admin == true) | .full_name' 2>/dev/null || true)"
+    repos="$(gh api user/repos --paginate --jq '.[] | select(.permissions.admin == true) | [.full_name, .description // "", .updated_at // ""] | @tsv' 2>/dev/null || true)"
 
     if [[ -z "$repos" ]]; then
         error "No repositories found with admin access. Check gh auth and permissions."
@@ -165,11 +184,11 @@ select_repo() {
 
     local max_jobs=10
     local running=0
-    while IFS= read -r repo; do
+    while IFS=$'\t' read -r repo desc updated; do
         (
             local count
             count="$(gh api "repos/${repo}/actions/workflows" --jq '.total_count' 2>/dev/null || echo "?")"
-            echo "${count}|${repo}"
+            printf '%s\t%s\t%s\t%s\n' "$count" "$repo" "$desc" "$updated"
         ) > "${tmpdir}/${repo//\//_}" &
         running=$((running + 1))
         if (( running >= max_jobs )); then
@@ -186,7 +205,7 @@ select_repo() {
     done < <(
         for f in "$tmpdir"/*; do
             [[ -f "$f" ]] && cat "$f"
-        done | sort -t'|' -k1 -rn
+        done | sort -t$'\t' -k1 -rn
     )
 
     rm -rf "$tmpdir"
@@ -198,28 +217,59 @@ select_repo() {
     fi
     debug "select_repo: found ${#sorted_repos[@]} repos"
 
-    # Build menu
+    # Build menu (two-line format: repo + description, then workflows + date)
     info "Select a repository:"
     local menu_items=()
+    local menu_repos=()
+    local idx=1
     for entry in "${sorted_repos[@]}"; do
-        local count="${entry%%|*}"
-        local repo="${entry#*|}"
+        local count repo desc updated
+        count="$(echo "$entry" | cut -f1)"
+        repo="$(echo "$entry" | cut -f2)"
+        desc="$(echo "$entry" | cut -f3)"
+        updated="$(echo "$entry" | cut -f4)"
+        local ago
+        ago="$(time_ago "$updated")"
+        local wf_str=""
         if [[ "$count" == "?" || "$count" == "0" ]]; then
-            menu_items+=("${repo} (no workflows)")
+            wf_str="no workflows"
         else
-            menu_items+=("${repo} (${count} workflows)")
+            wf_str="${count} workflow(s)"
         fi
+        local line2="  ${wf_str}"
+        [[ -n "$ago" ]] && line2+="  Updated ${ago}"
+        menu_items+=("${idx}) ${repo}" "${line2}")
+        menu_repos+=("$repo")
+        idx=$((idx + 1))
     done
 
     local choice
     if command -v fzf &>/dev/null; then
-        choice="$(printf '%s\n' "${menu_items[@]}" | fzf --height=15 --reverse --prompt="Select repo: " | sed 's/ (.*//')"
+        # fzf with multiline: join pairs with newline, display, extract repo from first line
+        local fzf_items=()
+        for (( i=0; i<${#menu_items[@]}; i+=2 )); do
+            fzf_items+=("${menu_items[$i]}")
+            fzf_items+=("${menu_items[$((i+1))]}")
+            fzf_items+=("")
+        done
+        local fzf_result
+        fzf_result="$(printf '%s\n' "${fzf_items[@]}" | fzf --height=15 --reverse --prompt="Select repo: " 2>/dev/null || true)"
+        if [[ -n "$fzf_result" ]]; then
+            # Extract repo name from "N) owner/repo" format
+            choice="$(echo "$fzf_result" | grep -oP '^\d+\) \K.*' || true)"
+        fi
     else
         if [[ -t 0 ]]; then
-            PS3="Pick a repo (number): "
-            select opt in "${menu_items[@]}"; do
+            local PS3="Pick a repo (number): "
+            local opts=()
+            for (( i=0; i<${#menu_items[@]}; i+=2 )); do
+                opts+=("${menu_items[$i]}")
+            done
+            select opt in "${opts[@]}"; do
                 if [[ -n "$opt" ]]; then
-                    choice="${opt%% (*}"
+                    # Extract number from "N) owner/repo"
+                    local num="${opt%%\)*}"
+                    choice="${menu_repos[$((num - 1))]}"
                     break
                 fi
                 warn "Invalid selection. Try again."
@@ -236,7 +286,7 @@ select_repo() {
         exit 1
     fi
 
-    GHR_REPO="$choice"
+    export GHR_REPO="$choice"
     success "Selected: $GHR_REPO"
 }
 
