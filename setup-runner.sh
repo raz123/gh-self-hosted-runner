@@ -238,7 +238,7 @@ select_repo() {
         fi
         local line2="  ${wf_str}"
         [[ -n "$ago" ]] && line2+="  Updated ${ago}"
-        menu_items+=("${idx}) ${repo}" "${line2}")
+        menu_items+=("[${idx}] ${repo}" "${line2}")
         menu_repos+=("$repo")
         idx=$((idx + 1))
     done
@@ -256,19 +256,19 @@ select_repo() {
         fzf_result="$(printf '%s\n' "${fzf_items[@]}" | fzf --height=15 --reverse --prompt="Select repo: " 2>/dev/null || true)"
         if [[ -n "$fzf_result" ]]; then
             # Extract repo name from "N) owner/repo" format
-            choice="$(echo "$fzf_result" | grep -oP '^\d+\) \K.*' || true)"
+            choice="$(echo "$fzf_result" | grep -oP '^\[\d+\] \K.*' || true)"
         fi
     else
         if [[ -t 0 ]]; then
-            local PS3="Pick a repo (number): "
+            local PS3="Pick a repo [#]: "
             local opts=()
             for (( i=0; i<${#menu_items[@]}; i+=2 )); do
                 opts+=("${menu_items[$i]}")
             done
             select opt in "${opts[@]}"; do
                 if [[ -n "$opt" ]]; then
-                    # Extract number from "N) owner/repo"
-                    local num="${opt%%\)*}"
+                    local num="${opt%%\]*}"
+                    num="${num##\[}"
                     choice="${menu_repos[$((num - 1))]}"
                     break
                 fi
